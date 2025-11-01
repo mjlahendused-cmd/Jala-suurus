@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="et">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Jala suuruse tuvastaja</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:0;padding:18px;background:#fafafa;color:#111}
+  .card{max-width:920px;margin:12px auto;padding:16px;border-radius:12px;background:#fff;box-shadow:0 6px 20px rgba(0,0,0,0.06)}
+  h1{margin:0 0 8px;font-size:20px}
+  p.lead{margin:0 0 12px;color:#444}
+  #canvasWrap{display:flex;gap:12px;flex-wrap:wrap}
+  canvas{border:1px solid #ddd;border-radius:8px;max-width:100%;height:auto}
+  .controls{min-width:260px;flex:1}
+  label{display:block;margin:8px 0 4px;font-weight:600}
+  input[type=number], input[type=text]{width:100%;padding:10px;border-radius:8px;border:1px solid #ddd;font-size:15px}
+  button{margin-top:8px;padding:10px;border-radius:8px;border:0;background:#0069d9;color:#fff;font-size:15px;width:100%}
+  .small{font-size:13px;color:#666;margin-top:6px}
+  .result{margin-top:12px;padding:12px;border-radius:8px;background:#f3ffef;border:1px solid #d6f5d8;color:#063d10}
+  .warn{background:#fff6f0;border:1px solid #ffd7c0;color:#8a2b00}
+  .tips{margin-top:10px;font-size:13px;color:#444}
+  .btn-row{display:flex;gap:8px}
+  .btn-row button{flex:1}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Jala suuruse tuvastaja (pildilt)</h1>
+    <p class="lead">Laadi üles foto jalgadest koos tuntud mõõteobjektiga (näiteks pangakaart ~8.56 cm, või A4 lühikülg 21.0 cm). Joonista ühe joonega kanna ja pikima varba vahele ning teise joonega referentsobjekti äärte vahele. Lisa referentsi tegelik pikkus cm-des ja kliki "Arvuta".</p>
+
+    <div id="canvasWrap">
+      <div style="flex:2;min-width:320px">
+        <input type="file" id="file" accept="image/*">
+        <div style="margin-top:8px">
+          <canvas id="c" width="800" height="600"></canvas>
+        </div>
+        <div class="tips">
+          <strong>Joonistamine:</strong> Esmalt loo <em>jala joon</em> (kann → varvas) klikiga kahe punkti. Seejärel loe <em>referentsi joon</em> (objekti otsa → otsa). Kui eksid, kasuta "Tühista viimene" või "Tühjenda".
+        </div>
+      </div>
+
+      <div class="controls">
+        <label>Referentsobjekti tegelik pikkus (cm)</label>
+        <input id="refCm" type="number" step="0.1" value="8.56" />
+        <div class="small">Näide: pangakaart ≈ 8.56 cm, A4 lühikülg = 21.00 cm</div>
+
+        <label>Valitud meetod</label>
+        <select id="method" style="width:100%;padding:10px;border-radius:8px;border:1px solid #ddd">
+          <option value="eu">Arvuta EU jalanumber (ISO/standardi alusel)</option>
+          <option value="mondo">Näita jalalenght (mm - Mondopoint)</option>
+        </select>
+
+        <div style="margin-top:12px">
+          <div class="btn-row">
+            <button id="calc">Arvuta</button>
+            <button id="clear" style="background:#777">Tühjenda</button>
+          </div>
+          <div class="btn-row" style="margin-top:8px">
+            <button id="undo" style="background:#bbb;color:#000">Tühista viimane</button>
+            <button id="help" style="background:#eee;color:#000">Näide/pildijuhend</button>
+          </div>
+        </div>
+
+        <div id="out" style="margin-top:12px"></div>
+
+        <div class="small" style="margin-top:12px">
+          <strong>Märkus:</strong> tulemus on ligikaudne — täpseks sobituseks arvestatakse tallapaksus, varbaasend, brändi lõigud. Parim tulemus saamiseks:
+          <ul>
+            <li>Aseta jalg sirgelt, pilt otse pealt, kaamera paralleelne põrandaga.</li>
+            <li>Kasuta tasast referentsi (nt kaardile või paberile) ja veendu, et see on samal tasapinnal jalaga.</li>
+            <li>Võimalusel tee mitu fotot ja võta keskmine tulemus.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let img = new Image();
+  let scale = 1;
+  let clicks = []; // store points as {x,y,type} type: 'foot' or 'ref'
+  let mode = 'foot'; // first two clicks = foot, next two = ref
+  const fileInp = document.getElementById('file');
+  const refCmInp = document.getElementById('refCm');
+  const out = document.getElementById('out');
+
+  function fitCanvasToContainer(){
+    // adjust size to container width but keep image ratio
+    const parentWidth = Math.min(800, window.innerWidth - 60);
+    if(img.width){
+      const ratio = img.width / img.height;
+      canvas.width = parentWidth;
+      canvas.height = Math.round(parentWidth / ratio);
+      draw();
+    }
+  }
+
+  window.addEventListener('resize', fitCanvasToContainer);
+
+  fileInp.addEventListener('change', (e)=>{
+    const f = e.target.files[0];
+    if(!f) return;
+    const url = URL.createObjectURL(f);
+    img = new Image();
+    img.onload = function(){
+      fitCanvasToContainer();
+      draw();
+    };
+    img.src = url;
+  });
+
+  canvas.addEventListener('click', (ev)=>{
+    if(!img.src) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (ev.clientX - rect.left) * (img.width / canvas.width);
+    const y = (ev.clientY - rect.top) * (img.height / canvas.height);
+    // determine type: first two clicks foot, next two ref
+    const cntFoot = clicks.filter(p=>p.type==='foot').length;
+    const cntRef = clicks.filter(p=>p.type==='ref').length;
+    let t = 'foot';
+    if(cntFoot >= 2) t = 'ref';
+    if(cntRef >= 2){
+      // reset both if already have two ref
+      // start new measurement
+      clicks = [];
+      t = 'foot';
+    }
+    clicks.push({x,y,type:t});
+    draw();
+  });
+
+  document.getElementById('undo').onclick = ()=>{
+    clicks.pop();
+    draw();
+  };
+  document.getElementById('clear').onclick = ()=>{
+    clicks = [];
+    out.innerHTML = '';
+    draw();
+  };
+
+  document.getElementById('help').onclick = ()=>{
+    alert('1) Aseta jalg pildile koos referentsiga.\n2) Klõpsa kanna peal, seejärel pikima varba otsas.\n3) Seejärel klõpsa referentsobjekti kahes punktis (ots-ots).\n4) Sisesta referentsi tegelik cm-pikkus ja vajuta "Arvuta".\n\nNäide referentsidest: pangakaart ≈ 8.56 cm; A4 lühikülg = 21.00 cm.');
+  };
+
+  function draw(){
+    // clear canvas and draw image scaled to canvas
+    if(!img.src){ ctx.fillStyle='#f0f0f0'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#666'; ctx.fillText('Laadi pilt üles',20,40); return; }
+    // draw image scaled
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    // draw image scaled to canvas size
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    // draw points scaled to canvas display coordinates
+    function toDisp(p){
+      return {dx: p.x * (canvas.width / img.width), dy: p.y * (canvas.height / img.height)};
+    }
+    // draw all points
+    for(let i=0;i<clicks.length;i++){
+      const p = toDisp(clicks[i]);
+      ctx.beginPath();
+      ctx.fillStyle = (clicks[i].type==='foot') ? '#0078d7' : '#e67e22';
+      ctx.arc(p.dx, p.dy, 6, 0, Math.PI*2);
+      ctx.fill();
+    }
+    // draw lines if two foot points
+    const footPts = clicks.filter(p=>p.type==='foot');
+    const refPts = clicks.filter(p=>p.type==='ref');
+    ctx.lineWidth = 3;
+    if(footPts.length>=2){
+      const a = toDisp(footPts[0]), b = toDisp(footPts[1]);
+      ctx.strokeStyle = '#0078d7';
+      ctx.beginPath(); ctx.moveTo(a.dx,a.dy); ctx.lineTo(b.dx,b.dy); ctx.stroke();
+    }
+    if(refPts.length>=2){
+      const a = toDisp(refPts[0]), b = toDisp(refPts[1]);
+      ctx.strokeStyle = '#e67e22';
+      ctx.beginPath(); ctx.moveTo(a.dx,a.dy); ctx.lineTo(b.dx,b.dy); ctx.stroke();
+    }
+    // labels
+    ctx.font = '14px sans-serif';
+    ctx.fillStyle = '#222';
+    ctx.fillText('Sinine = jala pikkus', 8, canvas.height-36);
+    ctx.fillStyle = '#aa5500';
+    ctx.fillText('Oranž = referents', 8, canvas.height-18);
+  }
+
+  function distance(p1,p2){ const dx=p1.x-p2.x, dy=p1.y-p2.y; return Math.sqrt(dx*dx+dy*dy); }
+
+  document.getElementById('calc').onclick = ()=>{
+    out.innerHTML = '';
+    const footPts = clicks.filter(p=>p.type==='foot');
+    const refPts = clicks.filter(p=>p.type==='ref');
+    if(footPts.length<2 || refPts.length<2){
+      out.innerHTML = '<div class="warn result">Palun joonista nii jala kui referentsi joone (kaks klikki kummalgi).</div>';
+      return;
+    }
+    // compute pixel lengths in image pixel space
+    const pixFoot = distance(footPts[0], footPts[1]);
+    const pixRef = distance(refPts[0], refPts[1]);
+    const refCm = parseFloat(refCmInp.value);
+    if(!refCm || refCm<=0){ out.innerHTML = '<div class="warn result">Sisesta kehtiv referentsi pikkus cm-s.</div>'; return; }
+
+    // scale: pix per cm => pixels_per_cm = pixRef / refCm
+    const pixelsPerCm = pixRef / refCm;
+    // foot length in cm:
+    const footCm = pixFoot / pixelsPerCm;
+    // foot length mm (Mondopoint)
+    const footMm = Math.round(footCm * 10); // cm -> mm
+    // EU shoe size per ISO 19407: EUR = (3/20)*L_mm + 2
+    const eur = (3/20) * footMm + 2;
+    // Round to nearest half size: multiply by 2, round, divide
+    const eurHalf = Math.round(eur * 2) / 2;
+    // prepare output with step-by-step math (digit-by-digit style)
+    // Show calculation example step-by-step
+    const step1 = `Mõõdetud pildi järgi: jala pikslipikkus = ${pixFoot.toFixed(1)} px, referentsi pikslipikkus = ${pixRef.toFixed(1)} px.`;
+    const step2 = `Skaleerimine: pixels_per_cm = pixRef / refCm = ${pixRef.toFixed(1)} / ${refCm.toFixed(2)} = ${(pixelsPerCm).toFixed(3)} px/cm.`;
+    const step3 = `Jala pikkus cm = pixFoot / pixels_per_cm = ${pixFoot.toFixed(1)} / ${(pixelsPerCm).toFixed(3)} = ${footCm.toFixed(2)} cm.`;
+    const step4 = `Jala pikkus mm = ${footCm.toFixed(2)} × 10 = ${footMm} mm.`;
+    const step5 = `EUR formula: EUR = (3/20) × L_mm + 2 = (3/20) × ${footMm} + 2 = ${(3/20*footMm).toFixed(2)} + 2 = ${(eur).toFixed(2)} => ümardatud ${eurHalf}.`;
+
+    out.innerHTML = `<div class="result"><strong>Tulemus:</strong><br>
+      Jala pikkus (cm): <strong>${footCm.toFixed(2)} cm</strong><br>
+      Jala pikkus (mm, Mondopoint): <strong>${footMm} mm</strong><br>
+      Soovitatav EU suurus (ISO arvutus): <strong>${eurHalf}</strong></div>
+      <div class="small" style="margin-top:8px">${step1}<br>${step2}<br>${step3}<br>${step4}<br>${step5}</div>`;
+  };
+
+  // initial draw
+  draw();
+})();
+</script>
+</body>
+</html>
